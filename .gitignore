@@ -1,0 +1,6 @@
+smserver
+smspooler
+smclient
+mailboxes/
+*.log
+*.o
