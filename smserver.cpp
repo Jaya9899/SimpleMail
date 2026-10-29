@@ -1,4 +1,4 @@
-/* smserver.c - SimpleMail frontend server (producer side of SM_SPOOL).
+/* smserver.cpp - SimpleMail frontend server (producer side of SM_SPOOL).
  *
  * Usage: ./smserver <port> <userfile>      (start AFTER smspooler, same cwd)
  *
@@ -12,30 +12,32 @@
  * ring and smspooler writes them. (It only reads / deletes mailbox files
  * for SMP.)
  */
-#define _GNU_SOURCE
 #include <arpa/inet.h>
 #include <dirent.h>
-#include <errno.h>
+#include <cerrno>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <semaphore.h>
-#include <signal.h>
-#include <stdarg.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <csignal>
+#include <cstdarg>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <strings.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <time.h>
+#include <ctime>
 #include <unistd.h>
 
-#include "smcommon.h"
-#include "smutil.h"
+#include <algorithm>
+#include <new>
+#include <vector>
+
+#include "smutil.h"   /* also pulls in smcommon.h */
 
 #define MAX_CLIENTS       256
 #define INBUF_CAP         8192
@@ -118,7 +120,7 @@ static void out_append(Client *c, const void *data, size_t n)
             size_t ncap = c->out_cap ? c->out_cap * 2 : 1024;
             while (ncap < c->out_len + n)
                 ncap *= 2;
-            unsigned char *p = realloc(c->out, ncap);
+            unsigned char *p = static_cast<unsigned char *>(realloc(c->out, ncap));
             if (!p) {
                 c->dead = 1;
                 return;
@@ -179,7 +181,7 @@ static void consume(Client *c, size_t n)
  * 0 = need more data, -1 = longer than maxlen. */
 static int get_line(Client *c, char **line, size_t *consumed, size_t maxlen)
 {
-    unsigned char *nl = memchr(c->inbuf, '\n', c->in_len);
+    unsigned char *nl = static_cast<unsigned char *>(memchr(c->inbuf, '\n', c->in_len));
     if (!nl)
         return c->in_len >= maxlen ? -1 : 0;
     size_t n = (size_t)(nl - c->inbuf) + 1;
@@ -220,49 +222,26 @@ static char *split_cmd(char *line, char **arg)
 /* Mailbox access (read / delete only - never creates mail files)      */
 /* ------------------------------------------------------------------ */
 
-static int cmp_ul(const void *a, const void *b)
-{
-    unsigned long x = *(const unsigned long *)a, y = *(const unsigned long *)b;
-    return (x > y) - (x < y);
-}
-
-/* Sorted ids of N.txt files in the user's mailbox. Caller frees *out. */
-static int mailbox_ids(const char *user, unsigned long **out)
+/* Sorted ids of N.txt files in the user's mailbox. Returns the count. */
+static int mailbox_ids(const char *user, std::vector<unsigned long> &ids)
 {
     char dir[256];
     snprintf(dir, sizeof dir, "%s/%.*s", SM_MAILBOX_DIR, SM_MAX_USERNAME, user);
-    *out = NULL;
+    ids.clear();
     DIR *d = opendir(dir);
     if (!d)
         return 0;
-    size_t cap = 16, n = 0;
-    unsigned long *ids = malloc(cap * sizeof *ids);
-    if (!ids) {
-        closedir(d);
-        return -1;
-    }
     struct dirent *e;
     while ((e = readdir(d))) {
         char *end;
         unsigned long v = strtoul(e->d_name, &end, 10);
         if (end == e->d_name || strcmp(end, ".txt") != 0)
             continue;
-        if (n == cap) {
-            unsigned long *t = realloc(ids, cap * 2 * sizeof *ids);
-            if (!t) {
-                free(ids);
-                closedir(d);
-                return -1;
-            }
-            ids = t;
-            cap *= 2;
-        }
-        ids[n++] = v;
+        ids.push_back(v);
     }
     closedir(d);
-    qsort(ids, n, sizeof *ids, cmp_ul);
-    *out = ids;
-    return (int)n;
+    std::sort(ids.begin(), ids.end());
+    return (int)ids.size();
 }
 
 static void mail_path(char *buf, size_t len, const char *user, unsigned long id)
@@ -292,37 +271,29 @@ static void read_headers(const char *path, char *from, size_t fl,
     fclose(f);
 }
 
-static unsigned char *read_file(const char *path, size_t *len)
+static bool read_file(const char *path, std::vector<unsigned char> &out)
 {
     FILE *f = fopen(path, "rb");
     if (!f)
-        return NULL;
+        return false;
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);
     fseek(f, 0, SEEK_SET);
     if (sz < 0) {
         fclose(f);
-        return NULL;
+        return false;
     }
-    unsigned char *buf = malloc((size_t)sz + 1);
-    if (!buf) {
-        fclose(f);
-        return NULL;
-    }
-    size_t got = fread(buf, 1, (size_t)sz, f);
+    out.resize((size_t)sz);
+    size_t got = sz ? fread(out.data(), 1, (size_t)sz, f) : 0;
     fclose(f);
-    *len = got;
-    return buf;
+    out.resize(got);
+    return true;
 }
 
 static void cmd_list(Client *c)
 {
-    unsigned long *ids;
-    int n = mailbox_ids(c->user, &ids);
-    if (n < 0) {
-        send_line(c, "ERR Server error");
-        return;
-    }
+    std::vector<unsigned long> ids;
+    int n = mailbox_ids(c->user, ids);
     send_line(c, "OK %d messages", n);
     for (int i = 0; i < n; i++) {
         char path[256], from[256], subj[512], date[64], row[1024];
@@ -336,7 +307,6 @@ static void cmd_list(Client *c)
         out_append(c, row, (size_t)l);
     }
     out_append(c, ".\r\n", 3);
-    free(ids);
     sm_log("client#%u: %s LIST (%d messages)", c->id, c->user, n);
 }
 
@@ -350,13 +320,14 @@ static void cmd_read(Client *c, const char *arg)
         return;
     }
     char path[256];
-    size_t len = 0;
+    std::vector<unsigned char> data;
     mail_path(path, sizeof path, c->user, id);
-    unsigned char *buf = read_file(path, &len);
-    if (!buf) {
+    if (!read_file(path, data)) {
         send_line(c, "ERR No such message");
         return;
     }
+    const unsigned char *buf = data.data();
+    size_t len = data.size();
     send_line(c, "OK");
     size_t i = 0;
     while (i < len) {
@@ -373,7 +344,6 @@ static void cmd_read(Client *c, const char *arg)
         i = j + 1;
     }
     out_append(c, ".\r\n", 3);
-    free(buf);
     sm_log("client#%u: %s READ %lu", c->id, c->user, id);
 }
 
@@ -398,13 +368,8 @@ static void cmd_delete(Client *c, const char *arg)
 
 static void cmd_count(Client *c)
 {
-    unsigned long *ids;
-    int n = mailbox_ids(c->user, &ids);
-    free(ids);
-    if (n < 0) {
-        send_line(c, "ERR Server error");
-        return;
-    }
+    std::vector<unsigned long> ids;
+    int n = mailbox_ids(c->user, ids);
     send_line(c, "OK %d", n);
     sm_log("client#%u: %s COUNT (%d)", c->id, c->user, n);
 }
@@ -419,7 +384,7 @@ static void reset_message(Client *c)
     c->nrcpt = 0;
     c->subject[0] = '\0';
     free(c->body);
-    c->body = NULL;
+    c->body = nullptr;
     c->body_len = 0;
     c->mid_line = 0;
     c->window = 0;
@@ -525,7 +490,7 @@ static void handle_mode(Client *c, char *line)
 static int is_smtp_verb(const char *s)
 {
     static const char *v[] = { "FROM", "TO", "SUB", "BODY", "BODY_STREAM",
-                               "CHUNK", "END_BODY", NULL };
+                               "CHUNK", "END_BODY", nullptr };
     for (int i = 0; v[i]; i++)
         if (strcasecmp(s, v[i]) == 0)
             return 1;
@@ -534,7 +499,7 @@ static int is_smtp_verb(const char *s)
 
 static void start_body(Client *c)
 {
-    c->body = malloc(SM_MAX_BODY);
+    c->body = static_cast<unsigned char *>(malloc(SM_MAX_BODY));
     if (!c->body) {
         send_line(c, "ERR Server error");
         c->closing = 1;
@@ -647,7 +612,7 @@ static void handle_smtp(Client *c, char *line)
 /* Legacy BODY mode. Returns 1 if progress was made, 0 if more data needed. */
 static int handle_body_data(Client *c)
 {
-    unsigned char *nl = memchr(c->inbuf, '\n', c->in_len);
+    unsigned char *nl = static_cast<unsigned char *>(memchr(c->inbuf, '\n', c->in_len));
     if (!nl) {
         if (c->in_len < INBUF_CAP)
             return 0;
@@ -847,7 +812,7 @@ static void destroy_client(Client *c)
     close(c->fd);
     free(c->out);
     free(c->body);
-    free(c);
+    delete c;
 }
 
 static void accept_clients(int lfd)
@@ -867,7 +832,7 @@ static void accept_clients(int lfd)
         }
         fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
 
-        Client *c = calloc(1, sizeof *c);
+        Client *c = new (std::nothrow) Client();   /* value-initialised: all zero */
         if (!c) {
             close(fd);
             continue;
@@ -875,7 +840,7 @@ static void accept_clients(int lfd)
         c->fd = fd;
         c->id = g_next_cid++;
         c->state = ST_MODE;
-        c->connected = time(NULL);
+        c->connected = time(nullptr);
         char ip[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &sa.sin_addr, ip, sizeof ip);
         snprintf(c->addr, sizeof c->addr, "%s:%u", ip, ntohs(sa.sin_port));
@@ -910,13 +875,13 @@ static int attach_spool(void)
     int id = shmget(SM_SPOOL_KEY, sizeof(SMSPool), 0666);
     if (id < 0)
         return -1;
-    void *p = shmat(id, NULL, 0);
+    void *p = shmat(id, nullptr, 0);
     if (p == (void *)-1)
         return -1;
-    g_spool = p;
+    g_spool = static_cast<SMSPool *>(p);
     if (g_spool->magic != SM_SPOOL_MAGIC || !g_spool->initialized) {
         shmdt(p);
-        g_spool = NULL;
+        g_spool = nullptr;
         return -1;
     }
     return 0;
@@ -949,10 +914,10 @@ int main(int argc, char **argv)
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
     sa.sa_handler = on_signal;
-    sigaction(SIGINT, &sa, NULL);
-    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGINT, &sa, nullptr);
+    sigaction(SIGTERM, &sa, nullptr);
     signal(SIGPIPE, SIG_IGN);
-    srand((unsigned)time(NULL) ^ (unsigned)getpid());
+    srand((unsigned)time(nullptr) ^ (unsigned)getpid());
 
     int lfd = socket(AF_INET, SOCK_STREAM, 0);
     if (lfd < 0) {
@@ -1029,7 +994,7 @@ int main(int argc, char **argv)
 
         fast = service_clients();
 
-        time_t now = time(NULL);
+        time_t now = time(nullptr);
         int j = 0;
         for (int i = 0; i < g_nclients; i++) {
             Client *c = g_clients[i];

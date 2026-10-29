@@ -1,10 +1,19 @@
 #ifndef SMUTIL_H
 #define SMUTIL_H
 
-/* Backend-only helpers (Person 1). smcommon.h is left untouched. */
+/* Backend-only helpers (Person 1). smcommon.h is left untouched.
+ *
+ * Always include THIS header (not smcommon.h directly) from C++ files: it
+ * first declares sm_djb2 with C linkage, so the function keeps an unmangled
+ * name and a C smclient.c (or a C++ one) can link against smcommon.cpp. */
 
 #include <stddef.h>
 #include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" uint64_t sm_djb2(const char *text);
+#endif
+
 #include "smcommon.h"
 
 #define SM_SPOOL_MAGIC  0x534D5350u

@@ -1,13 +1,11 @@
-/* smcommon.c - shared helpers: DJB2, logging, user registry */
-#define _GNU_SOURCE
-#include <ctype.h>
-#include <stdarg.h>
-#include <stdio.h>
-#include <string.h>
-#include <time.h>
+/* smcommon.cpp - shared helpers: DJB2, logging, user registry */
+#include <cctype>
+#include <cstdarg>
+#include <cstdio>
+#include <cstring>
+#include <ctime>
 
-#include "smcommon.h"
-#include "smutil.h"
+#include "smutil.h"   /* also pulls in smcommon.h */
 
 uint64_t sm_djb2(const char *text)
 {

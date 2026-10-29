@@ -1,4 +1,4 @@
-/* smspooler.c - SimpleMail background spooler (consumer side of SM_SPOOL).
+/* smspooler.cpp - SimpleMail background spooler (consumer side of SM_SPOOL).
  *
  * Usage: ./smspooler <userfile>
  *
@@ -7,30 +7,28 @@
  *   -> write mail files -> sem_post(empty)
  * Only this process ever writes into mailboxes/.
  */
-#define _GNU_SOURCE
 #include <dirent.h>
-#include <errno.h>
+#include <cerrno>
 #include <semaphore.h>
-#include <signal.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <csignal>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <sys/ipc.h>
 #include <sys/shm.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <time.h>
+#include <ctime>
 #include <unistd.h>
 
-#include "smcommon.h"
-#include "smutil.h"
+#include "smutil.h"   /* also pulls in smcommon.h */
 
 static volatile sig_atomic_t g_stop = 0;
 static SMUser   g_users[SM_MAX_USERS];
 static uint64_t g_next_id[SM_MAX_USERS];
 static int      g_nusers;
 static int      g_shmid = -1;
-static SMSPool *g_spool = NULL;
+static SMSPool *g_spool = nullptr;
 
 static void on_signal(int sig) { (void)sig; g_stop = 1; }
 
@@ -186,7 +184,7 @@ static void create_shm(void)
                 fprintf(stderr, "Shared memory segment is in use (another smspooler/smserver running?)\n");
                 exit(1);
             }
-            shmctl(old, IPC_RMID, NULL);
+            shmctl(old, IPC_RMID, nullptr);
             sm_log("removed stale shared memory segment");
         }
         g_shmid = shmget(SM_SPOOL_KEY, sz, IPC_CREAT | IPC_EXCL | 0666);
@@ -195,12 +193,13 @@ static void create_shm(void)
         perror("shmget");
         exit(1);
     }
-    g_spool = shmat(g_shmid, NULL, 0);
-    if (g_spool == (void *)-1) {
+    void *mem = shmat(g_shmid, nullptr, 0);
+    if (mem == (void *)-1) {
         perror("shmat");
-        shmctl(g_shmid, IPC_RMID, NULL);
+        shmctl(g_shmid, IPC_RMID, nullptr);
         exit(1);
     }
+    g_spool = static_cast<SMSPool *>(mem);
 
     memset(g_spool, 0, sizeof *g_spool);
     if (sem_init(&g_spool->empty_slots, 1, SM_SPOOL_CAPACITY) != 0 ||
@@ -208,7 +207,7 @@ static void create_shm(void)
         sem_init(&g_spool->ring_mutex,  1, 1) != 0) {
         perror("sem_init");
         shmdt(g_spool);
-        shmctl(g_shmid, IPC_RMID, NULL);
+        shmctl(g_shmid, IPC_RMID, nullptr);
         exit(1);
     }
     g_spool->head = g_spool->tail = 0;
@@ -226,8 +225,8 @@ static void destroy_shm(void)
     sem_destroy(&g_spool->full_slots);
     sem_destroy(&g_spool->ring_mutex);
     shmdt(g_spool);
-    shmctl(g_shmid, IPC_RMID, NULL);
-    g_spool = NULL;
+    shmctl(g_shmid, IPC_RMID, nullptr);
+    g_spool = nullptr;
 }
 
 /* Take one slot (caller already consumed full_slots) and spool it. */
@@ -264,8 +263,8 @@ int main(int argc, char **argv)
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
     sa.sa_handler = on_signal;            /* no SA_RESTART: wake blocking calls */
-    sigaction(SIGINT, &sa, NULL);
-    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGINT, &sa, nullptr);
+    sigaction(SIGTERM, &sa, nullptr);
 
     init_mailboxes();
     create_shm();
